@@ -17,7 +17,7 @@ The code evaluates if:
 
 The code evaluates the lane and the position of the other cars on the road at the
 end of the last iteration (planned trajectory) to avoid dangerous situations. A car
-is considered near if it is less than 30m apart from the current position.
+is considered near if it is less than 35m apart from the current position.
 
 (lines 247 - 287)
 
