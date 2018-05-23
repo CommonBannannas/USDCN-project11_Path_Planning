@@ -8,13 +8,13 @@
 #include "Eigen-3.3/Eigen/Core"
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
+#include "spline.h"
 
 using namespace std;
 
-// for convenience
 using json = nlohmann::json;
 
-// For converting back and forth between radians and degrees.
+//Converting for radians and degrees.
 constexpr double pi() { return M_PI; }
 double deg2rad(double x) { return x * pi() / 180; }
 double rad2deg(double x) { return x * 180 / pi(); }
@@ -69,24 +69,20 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
 	double map_x = maps_x[closestWaypoint];
 	double map_y = maps_y[closestWaypoint];
 
-	double heading = atan2((map_y-y),(map_x-x));
+	double heading = atan2( (map_y-y),(map_x-x) );
 
-	double angle = fabs(theta-heading);
-  angle = min(2*pi() - angle, angle);
+	double angle = abs(theta-heading);
 
-  if(angle > pi()/4)
-  {
-    closestWaypoint++;
-  if (closestWaypoint == maps_x.size())
-  {
-    closestWaypoint = 0;
-  }
-  }
+	if(angle > pi()/4)
+	{
+		closestWaypoint++;
+	}
 
-  return closestWaypoint;
+	return closestWaypoint;
+
 }
 
-// Transform from Cartesian x,y coordinates to Frenet s,d coordinates
+//cartesian (x,y) coordinates to Frenet (s,d) coordinates
 vector<double> getFrenet(double x, double y, double theta, const vector<double> &maps_x, const vector<double> &maps_y)
 {
 	int next_wp = NextWaypoint(x,y, theta, maps_x,maps_y);
@@ -110,7 +106,7 @@ vector<double> getFrenet(double x, double y, double theta, const vector<double> 
 
 	double frenet_d = distance(x_x,x_y,proj_x,proj_y);
 
-	//see if d value is positive or negative by comparing it to a center point
+	//Check pos or neg
 
 	double center_x = 1000-maps_x[prev_wp];
 	double center_y = 2000-maps_y[prev_wp];
@@ -200,8 +196,17 @@ int main() {
   	map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
-                     uWS::OpCode opCode) {
+  // car's lane, starts at middle lane
+  int lane = 1;
+
+  // Reference velocity.
+  double v_ref = 0.0; // in mph
+
+  h.onMessage([&v_ref, &lane, &map_waypoints_x,&map_waypoints_y,&map_waypoints_s,&map_waypoints_dx,&map_waypoints_dy]
+    (uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length, uWS::OpCode opCode) {
+
+
+
     // "42" at the start of the message means there's a websocket message event.
     // The 4 signifies a websocket message
     // The 2 signifies a websocket event
@@ -213,12 +218,12 @@ int main() {
 
       if (s != "") {
         auto j = json::parse(s);
-        
+
         string event = j[0].get<string>();
-        
+
         if (event == "telemetry") {
           // j[1] is the data JSON object
-          
+
         	// Main car's localization Data
           	double car_x = j[1]["x"];
           	double car_y = j[1]["y"];
@@ -227,23 +232,193 @@ int main() {
           	double car_yaw = j[1]["yaw"];
           	double car_speed = j[1]["speed"];
 
-          	// Previous path data given to the Planner
+          	// last iteration path data:
           	auto previous_path_x = j[1]["previous_path_x"];
           	auto previous_path_y = j[1]["previous_path_y"];
-          	// Previous path's end s and d values 
+          	// last iteration s, d
           	double end_path_s = j[1]["end_path_s"];
           	double end_path_d = j[1]["end_path_d"];
 
-          	// Sensor Fusion Data, a list of all other cars on the same side of the road.
+          	// sensor fusion data (other cars on the road)
           	auto sensor_fusion = j[1]["sensor_fusion"];
 
-          	json msgJson;
+            int prev_path_len = previous_path_x.size();
 
+            // no collisions please
+            if (prev_path_len > 0) {
+              car_s = end_path_s;
+            }
+
+            // predicting other cars positions
+            bool car_up = false;
+            bool car_left = false;
+            bool car_right = false;
+            for ( int i = 0; i < sensor_fusion.size(); i++ ) {
+                float d = sensor_fusion[i][6];
+                int other_car_lane = -1;
+                if ( d > 0 && d < 4 ) {
+                  other_car_lane = 0;
+                } else if ( d > 4 && d < 8 ) {
+                  other_car_lane = 1;
+                } else if ( d > 8 && d < 12 ) {
+                  other_car_lane = 2;
+                }
+                if (other_car_lane < 0) {
+                  continue;
+                }
+                // other car speed.
+                double vx = sensor_fusion[i][3];
+                double vy = sensor_fusion[i][4];
+                double other_carspeed = sqrt(vx*vx + vy*vy);
+                double other_scar = sensor_fusion[i][5];
+                // other car position after executing previous trajectory.
+                other_scar += ((double)prev_path_len*0.02*other_carspeed);
+
+                if ( other_car_lane == lane ) {
+                  // car in our lane.
+                  car_up |= other_scar > car_s && other_scar - car_s < 30;
+                } else if ( other_car_lane - lane == -1 ) {
+                  // car left
+                  car_left |= car_s - 30 < other_scar && car_s + 30 > other_scar;
+                } else if ( other_car_lane - lane == 1 ) {
+                  // car right
+                  car_right |= car_s - 30 < other_scar && car_s + 30 > other_scar;
+                }
+            }
+
+            // self driving behavior
+            double speed_delta = 0.0;
+            const double MAX_SPEED = 49.5;
+            const double MAX_ACC = .224;
+            if ( car_up ) { // car ahead
+              if ( !car_left && lane > 0 ) {
+                lane--; // change left.
+              } else if ( !car_right && lane != 2 ){
+                lane++; // change right.
+              } else {
+                speed_delta -= MAX_ACC;
+              }
+            } else {
+              if ( lane != 1 ) {
+                if ( ( lane == 0 && !car_right ) || ( lane == 2 && !car_left ) ) {
+                  lane = 1; // return to center lane if not in center lane!!!
+                }
+              }
+              if ( v_ref < MAX_SPEED ) {
+                speed_delta += MAX_ACC;
+              }
+            }
+
+          	vector<double> sx;
+            vector<double> sy;
+
+            double ref_x = car_x;
+            double ref_y = car_y;
+            double ref_yaw = deg2rad(car_yaw);
+
+            // previous waypoints
+            if ( prev_path_len < 2 ) {
+
+                double prev_car_x = car_x - cos(car_yaw);
+                double prev_car_y = car_y - sin(car_yaw);
+
+                sx.push_back(prev_car_x);
+                sx.push_back(car_x);
+
+                sy.push_back(prev_car_y);
+                sy.push_back(car_y);
+            } else {
+                // use last two waypoints.
+                ref_x = previous_path_x[prev_path_len - 1];
+                ref_y = previous_path_y[prev_path_len - 1];
+                // x, y
+                double ref_x_prev = previous_path_x[prev_path_len - 2];
+                double ref_y_prev = previous_path_y[prev_path_len - 2];
+                // yaw
+                ref_yaw = atan2(ref_y-ref_y_prev, ref_x-ref_x_prev);
+
+                sx.push_back(ref_x_prev);
+                sx.push_back(ref_x);
+
+                sy.push_back(ref_y_prev);
+                sy.push_back(ref_y);
+            }
+
+            // target points in  t+1.
+            vector<double> waypoint_0 = getXY(car_s + 35, 2 + 4*lane,
+                                            map_waypoints_s, map_waypoints_x,
+                                            map_waypoints_y);
+            vector<double> waypoint_1 = getXY(car_s + 70, 2 + 4*lane,
+                                            map_waypoints_s, map_waypoints_x,
+                                            map_waypoints_y);
+            vector<double> waypoint_2 = getXY(car_s + 95, 2 + 4*lane,
+                                            map_waypoints_s, map_waypoints_x,
+                                            map_waypoints_y);
+
+            sx.push_back(waypoint_0[0]);
+            sx.push_back(waypoint_1[0]);
+            sx.push_back(waypoint_2[0]);
+
+            sy.push_back(waypoint_0[1]);
+            sy.push_back(waypoint_1[1]);
+            sy.push_back(waypoint_2[1]);
+
+            for ( int i = 0; i < sx.size(); i++ ) {
+              double x_shifted = sx[i] - ref_x;
+              double y_shifted = sy[i] - ref_y;
+
+              sx[i] = x_shifted * cos(0 - ref_yaw) - y_shifted * sin(0 - ref_yaw);
+              sy[i] = x_shifted * sin(0 - ref_yaw) + y_shifted * cos(0 - ref_yaw);
+            }
+
+            //fit spline.
+            tk::spline s;
+            s.set_points(sx, sy);
+
+            // waypoints from previous iteration
           	vector<double> next_x_vals;
           	vector<double> next_y_vals;
 
+            for ( int i = 0; i < prev_path_len; i++ ) {
+              next_x_vals.push_back(previous_path_x[i]);
+              next_y_vals.push_back(previous_path_y[i]);
+            }
 
-          	// TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
+            // distance and position on 30m ahead.
+            double x_target = 35.0;
+            double y_target = s(x_target);
+            double dist_target = sqrt(x_target*x_target + y_target*y_target);
+
+            double x_add = 0;
+
+            for( int i = 1; i < 50 - prev_path_len; i++ ) {
+              v_ref += speed_delta;
+              if ( v_ref > MAX_SPEED ) {
+                v_ref = MAX_SPEED;
+              } else if ( v_ref < MAX_ACC ) {
+                v_ref = MAX_ACC;
+              }
+              double N = dist_target/(0.02*v_ref/2.24);
+              double x_point = x_add + x_target/N;
+              double y_point = s(x_point);
+
+              x_add = x_point;
+
+              double x_aux = x_point;
+              double y_aux = y_point;
+
+              x_point = x_aux * cos(ref_yaw) - y_aux * sin(ref_yaw);
+              y_point = x_aux * sin(ref_yaw) + y_aux * cos(ref_yaw);
+
+              x_point += ref_x;
+              y_point += ref_y;
+
+              next_x_vals.push_back(x_point);
+              next_y_vals.push_back(y_point);
+            }
+
+            json msgJson;
+
           	msgJson["next_x"] = next_x_vals;
           	msgJson["next_y"] = next_y_vals;
 
@@ -251,7 +426,7 @@ int main() {
 
           	//this_thread::sleep_for(chrono::milliseconds(1000));
           	ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
-          
+
         }
       } else {
         // Manual driving
