@@ -8,7 +8,7 @@
 
 ![alt text][image1]
 
-### Path Planning Prediction (
+### Path Planning Prediction 
 Here the software uses telemetry and sensor fusion data to predict other cars
 trajectories and to reason about the environment surrounding the car.
 The code evaluates if:
