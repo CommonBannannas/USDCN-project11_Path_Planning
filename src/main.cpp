@@ -276,13 +276,13 @@ int main() {
 
                 if ( other_car_lane == lane ) {
                   // car in our lane.
-                  car_up |= other_scar > car_s && other_scar - car_s < 30;
+                  car_up |= other_scar > car_s && other_scar - car_s < 35;
                 } else if ( other_car_lane - lane == -1 ) {
                   // car left
-                  car_left |= car_s - 30 < other_scar && car_s + 30 > other_scar;
+                  car_left |= car_s - 35 < other_scar && car_s + 35 > other_scar;
                 } else if ( other_car_lane - lane == 1 ) {
                   // car right
-                  car_right |= car_s - 30 < other_scar && car_s + 30 > other_scar;
+                  car_right |= car_s - 35 < other_scar && car_s + 35 > other_scar;
                 }
             }
 
@@ -384,7 +384,7 @@ int main() {
               next_y_vals.push_back(previous_path_y[i]);
             }
 
-            // distance and position on 30m ahead.
+            // distance and position on 35m ahead.
             double x_target = 35.0;
             double y_target = s(x_target);
             double dist_target = sqrt(x_target*x_target + y_target*y_target);
