@@ -8,7 +8,7 @@
 
 ![alt text][image1]
 
-### Path Planning Prediction 
+### Path Planning Prediction
 Here the software uses telemetry and sensor fusion data to predict other cars
 trajectories and to reason about the environment surrounding the car.
 The code evaluates if:
@@ -47,3 +47,9 @@ The change in the car speed is determined in the behavior algorithm, however the
 also uses it to increase or decrease the speed in every waypoints of the generated trajectory.
 
 (lines 312 - 417)
+
+#### Model Shortcomings:
+A PID or MPC controller could be used to follow the Path Planning output path
+extracting the desired speed from the path and then feed that into the controller.
+Also for future work a MPC controller could change the cost function and use the distance
+to a waypoint on the generated path.
